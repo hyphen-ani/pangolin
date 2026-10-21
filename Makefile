@@ -7,7 +7,7 @@ test:
 	go test -race ./...
 
 run: build
-	./bin/pangolin run --upstream http://127.0.0.1:9000/api --log-level debug
+	./bin/pangolin run --config examples/pangolin.yaml --log-level debug
 
 echo:
 	go run ./hack/echo

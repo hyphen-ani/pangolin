@@ -6,13 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/hyphen-ani/pangolin/internal/config"
+	"github.com/hyphen-ani/pangolin/internal/gateway"
 	"github.com/hyphen-ani/pangolin/internal/proxy"
 	"github.com/hyphen-ani/pangolin/internal/server"
 )
@@ -78,8 +78,8 @@ func validateCmd(args []string) error {
 // runCmd still proxies to a single --upstream; Step 3 switches it to --config.
 func runCmd(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	cfgPath := fs.String("config", "pangolin.yaml", "path to the config file")
 	listen := fs.String("listen", ":8080", "proxy listen address")
-	upstream := fs.String("upstream", "http://127.0.0.1:9000", "upstream base URL")
 	drain := fs.Duration("drain-timeout", 30*time.Second, "max time to finish in-flight requests on shutdown")
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
 	if err := fs.Parse(args); err != nil {
@@ -88,16 +88,18 @@ func runCmd(args []string) error {
 
 	logger := newLogger(*logLevel)
 
-	target, err := url.Parse(*upstream)
+	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		return fmt.Errorf("parse upstream: %w", err)
+		return err
 	}
-	if (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" {
-		return fmt.Errorf("upstream must be an absolute http(s) URL, got %q", *upstream)
+	fwd := proxy.NewForwarder(proxy.NewTransport(), logger)
+	gw, err := gateway.New(cfg, fwd, logger)
+	if err != nil {
+		return fmt.Errorf("build gateway: %w", err)
 	}
+	logger.Info("config loaded", "path", *cfgPath, "services", len(cfg.Services))
 
-	handler := proxy.New(target, proxy.NewTransport(), logger)
-	srv := server.New(*listen, handler, logger)
+	srv := server.New(*listen, gw, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

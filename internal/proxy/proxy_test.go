@@ -7,19 +7,71 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
 func newTestProxy(t *testing.T, upstream string) *httptest.Server {
+	return newTestProxyWith(t, upstream, "", false)
+}
+
+func newTestProxyWith(t *testing.T, upstream, strip string, preserveHost bool) *httptest.Server {
 	t.Helper()
 	u, err := url.Parse(upstream)
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	p := httptest.NewServer(New(u, NewTransport(), logger))
+	fwd := NewForwarder(NewTransport(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	dst := Destination{Target: u, StripPrefix: strip, PreserveHost: preserveHost}
+
+	p := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fwd.Forward(w, r, dst)
+	}))
 	t.Cleanup(p.Close)
 	return p
+}
+
+func TestRewritePathAndHost(t *testing.T) {
+	cases := []struct {
+		name, base, strip, reqPath, wantPath string
+		preserveHost                         bool
+	}{
+		{"no strip", "/api", "", "/users/42", "/api/users/42", false},
+		{"strip prefix", "/api", "/users", "/users/42", "/api/42", false},
+		{"strip whole path keeps base", "/api", "/users", "/users", "/api", false},
+		{"strip whole path, no base", "", "/users", "/users", "/", false},
+		{"preserve host", "", "", "/x", "/x", true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			type seen struct{ path, host string }
+			ch := make(chan seen, 1)
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ch <- seen{r.URL.Path, r.Host}
+			}))
+			defer up.Close()
+
+			p := newTestProxyWith(t, up.URL+c.base, c.strip, c.preserveHost)
+			res, err := http.Get(p.URL + c.reqPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res.Body.Close()
+
+			got := <-ch
+			if got.path != c.wantPath {
+				t.Errorf("upstream path = %q, want %q", got.path, c.wantPath)
+			}
+			wantHost := strings.TrimPrefix(up.URL, "http://")
+			if c.preserveHost {
+				wantHost = strings.TrimPrefix(p.URL, "http://")
+			}
+			if got.host != wantHost {
+				t.Errorf("upstream Host = %q, want %q", got.host, wantHost)
+			}
+		})
+	}
 }
 
 func TestProxyForwardsRequestAndResponse(t *testing.T) {
