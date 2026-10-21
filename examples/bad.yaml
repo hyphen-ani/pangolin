@@ -1,0 +1,11 @@
+apiVersion: pangolinhq.dev/v1alpha1
+kind: Config
+services:
+  - name: Echo_Service
+    upstream:
+      targets:
+        - { host: "http://127.0.0.1", port: 70000 }
+    routes:
+      - name: users
+        paths: ["~/admin", "users"]
+        methods: [FETCH]

@@ -1,0 +1,25 @@
+apiVersion: pangolinhq.dev/v1alpha1
+kind: Config
+services:
+  - name: echo
+    path: /api
+    upstream:
+      scheme: http
+      algorithm: round-robin
+      targets:
+        - host: 127.0.0.1
+          port: 9000
+        - host: 127.0.0.1
+          port: 9001
+          weight: 50
+    routes:
+      - name: users
+        hosts: [ localhost ]
+        paths: [ /users ]
+        methods: [ GET, POST ]
+      - name: user-by-id
+        paths: [ "~^/users/[0-9]+$" ]
+        priority: 10
+      - name: health
+        paths: [ "=/healthz" ]
+        strip_path: false

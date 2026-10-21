@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -11,55 +12,103 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hyphen-ani/pangolin/internal/config"
 	"github.com/hyphen-ani/pangolin/internal/proxy"
 	"github.com/hyphen-ani/pangolin/internal/server"
 )
 
+const usageText = `Usage: pangolin <command> [flags]
+
+Commands:
+  run        start the gateway
+  validate   check a config file and exit (non-zero on errors)
+
+Run "pangolin <command> -h" for a command's flags.
+`
+
 func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprint(os.Stderr, usageText)
+		os.Exit(2)
+	}
 
-	var (
-		listen   = flag.String("listen", ":8080", "proxy listen address")
-		upstream = flag.String("upstream", "http://127.0.0.1:9000", "upstream base URL")
-		drain    = flag.Duration("drain-timeout", 30*time.Second, "max time to finish in-flight requests on shutdown")
-		logLevel = flag.String("log-level", "info", "debug, info, warn or error")
-	)
-	flag.Parse()
+	var err error
+	switch cmd, args := os.Args[1], os.Args[2:]; cmd {
+	case "run":
+		err = runCmd(args)
+	case "validate":
+		err = validateCmd(args)
+	case "help", "-h", "--help":
+		fmt.Print(usageText)
+		return
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", cmd, usageText)
+		os.Exit(2)
+	}
 
-	logger := newLogger(*logLevel)
-	if err := run(logger, *listen, *upstream, *drain); err != nil {
-		logger.Error("pangolin exited with error", "err", err)
+	if errors.Is(err, flag.ErrHelp) {
+		return // "-h" already printed the flag help
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger, listen, upstream string, drain time.Duration) error {
-	target, err := url.Parse(upstream)
+func validateCmd(args []string) error {
+	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
+	path := fs.String("config", "pangolin.yaml", "path to the config file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+
+	routes := 0
+	for _, s := range cfg.Services {
+		routes += len(s.Routes)
+	}
+	fmt.Printf("%s: OK (%d services, %d routes)\n", *path, len(cfg.Services), routes)
+	return nil
+}
+
+// runCmd still proxies to a single --upstream; Step 3 switches it to --config.
+func runCmd(args []string) error {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	listen := fs.String("listen", ":8080", "proxy listen address")
+	upstream := fs.String("upstream", "http://127.0.0.1:9000", "upstream base URL")
+	drain := fs.Duration("drain-timeout", 30*time.Second, "max time to finish in-flight requests on shutdown")
+	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	logger := newLogger(*logLevel)
+
+	target, err := url.Parse(*upstream)
 	if err != nil {
 		return fmt.Errorf("parse upstream: %w", err)
 	}
-
 	if (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" {
-		return fmt.Errorf("upstream must be an absolute http(s) URL, got %q", upstream)
+		return fmt.Errorf("upstream must be an absolute http(s) URL, got %q", *upstream)
 	}
 
 	handler := proxy.New(target, proxy.NewTransport(), logger)
-	srv := server.New(listen, handler, logger)
+	srv := server.New(*listen, handler, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	return srv.Run(ctx, drain)
+	return srv.Run(ctx, *drain)
 }
 
 func newLogger(level string) *slog.Logger {
-
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(level)); err != nil {
 		lvl = slog.LevelInfo
 	}
-
-	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level: lvl,
-	}))
-
+	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
 }
