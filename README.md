@@ -21,7 +21,7 @@
 
 ---
 
-> **Status: pre-alpha.** Pangolin is under active development and not yet ready for production traffic. The config schema (`pangolin.dev/v1alpha1`) may change between releases. See the [roadmap](#roadmap) for what works today.
+> **Status: pre-alpha.** Pangolin is under active development and not yet ready for production traffic. The config schema (`pangolinhq.dev/v1alpha1`) may change between releases. See the [roadmap](#roadmap) for what works today.
 
 ## Table of contents
 
@@ -142,7 +142,7 @@ for i in $(seq 30); do curl -s localhost:8080/users/abc | jq -r .server; done | 
 Pangolin reads one YAML document. All fields are listed below; anything not listed is an error.
 
 ```yaml
-apiVersion: pangolin.dev/v1alpha1     # required
+apiVersion: pangolinhq.dev/v1alpha1     # required
 kind: Config                          # required
 services:
   - name: orders-api                  # required; lowercase, digits, '-'; unique
