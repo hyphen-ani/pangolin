@@ -14,7 +14,7 @@ import (
 func targets(weights ...int) []*Target {
 	ts := make([]*Target, len(weights))
 	for i, w := range weights {
-		ts[i] = NewTarget(&url.URL{Scheme: "http", Host: fmt.Sprintf("10.0.0.%d:80", i+1)}, w)
+		ts[i] = NewTarget(&url.URL{Scheme: "http", Host: fmt.Sprintf("10.0.0.%d:80", i+1)}, w, nil)
 	}
 	return ts
 }

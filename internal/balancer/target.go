@@ -6,38 +6,48 @@ import (
 )
 
 type Target struct {
-	Addr string
-	URL *url.URL
+	Addr   string
+	URL    *url.URL
 	Weight int
-
-	inflight atomic.Int64
-	healthy atomic.Bool
+	state  *State
 }
 
-func NewTarget(u *url.URL, weight int)  *Target {
-	t := &Target{Addr: u.Host, URL: u, Weight: weight}
-	t.healthy.Store(true)
-	return t
+type State struct {
+	inflight atomic.Int64
+	healthy  atomic.Bool
+}
+
+func NewState() *State {
+	s := &State{}
+	s.healthy.Store(true)
+	return s
+}
+
+func NewTarget(u *url.URL, weight int, st *State) *Target {
+	if st == nil {
+		st = NewState()
+	}
+	return &Target{Addr: u.Host, URL: u, Weight: weight, state: st}
 }
 
 func (t *Target) Healthy() bool {
-	return t.healthy.Load()
+	return t.state.healthy.Load()
 }
 
 func (t *Target) SetHealthy(ok bool) {
-	t.healthy.Store(ok)
+	t.state.healthy.Store(ok)
 }
 
 func (t *Target) InFlight() int64 {
-	return t.inflight.Load()
+	return t.state.inflight.Load()
 }
 
 func (t *Target) Acquire() {
-	t.inflight.Add(1)
+	t.state.inflight.Add(1)
 }
 
 func (t *Target) Release() {
-	t.inflight.Add(-1)
+	t.state.inflight.Add(-1)
 }
 
 func (t *Target) eligible() bool {

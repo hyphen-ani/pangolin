@@ -1,68 +1,83 @@
 package gateway
 
 import (
-	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/url"
-	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/hyphen-ani/pangolin/internal/balancer"
 	"github.com/hyphen-ani/pangolin/internal/config"
 	"github.com/hyphen-ani/pangolin/internal/proxy"
-	"github.com/hyphen-ani/pangolin/internal/router"
 )
 
-type service struct {
-	name     string
-	targets  []*balancer.Target
-	balancer balancer.Balancer
-}
-
 type Gateway struct {
-	router   *router.Router
-	services map[string]*service
-	fwd      *proxy.Forwarder
-	logger   *slog.Logger
+	current atomic.Pointer[Snapshot]
+	fwd     *proxy.Forwarder
+	logger  *slog.Logger
+	mu      sync.Mutex
+	version uint64
+	states  map[string]*balancer.State
 }
 
-func New(cfg *config.Config, fwd *proxy.Forwarder, logger *slog.Logger) (*Gateway, error) {
-	rt, err := router.New(cfg)
+func New(fwd *proxy.Forwarder, logger *slog.Logger) *Gateway {
+	return &Gateway{
+		fwd:    fwd,
+		logger: logger,
+		states: map[string]*balancer.State{},
+	}
+}
+
+func (g *Gateway) Apply(cfg *config.Config, hash string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	start := time.Now()
+	used := make(map[string]*balancer.State)
+	snap, err := buildSnapshot(cfg, func(key string) *balancer.State {
+		st, ok := g.states[key]
+		if !ok {
+			st = balancer.NewState()
+		}
+		used[key] = st
+		return st
+	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	services := make(map[string]*service, len(cfg.Services))
-	for _, s := range cfg.Services {
-		targets := make([]*balancer.Target, 0, len(s.Upstream.Targets))
-		for _, tc := range s.Upstream.Targets {
-			u := &url.URL{
-				Scheme: s.Upstream.Scheme,
-				Host:   net.JoinHostPort(tc.Host, strconv.Itoa(tc.Port)),
-				Path:   s.Path,
-			}
-			targets = append(targets, balancer.NewTarget(u, *tc.Weight))
-		}
+	g.version++
+	snap.Version, snap.Hash, snap.LoadedAt = g.version, hash, time.Now()
+	g.current.Store(snap)
+	g.states = used
 
-		b, err := balancer.New(s.Upstream.Algorithm, targets)
-		if err != nil {
-			return nil, fmt.Errorf("service %q: %w", s.Name, err)
-		}
-		services[s.Name] = &service{name: s.Name, targets: targets, balancer: b}
-	}
+	g.logger.Info("config applied",
+		"version", snap.Version, "hash", hash,
+		"services", snap.Services, "routes", snap.Routes,
+		"took", time.Since(start).String())
 
-	return &Gateway{router: rt, services: services, fwd: fwd, logger: logger}, nil
+	return nil
+}
+
+func (g *Gateway) Current() *Snapshot {
+	return g.current.Load()
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	m, ok := g.router.Match(r)
+	snap := g.current.Load()
+	if snap == nil {
+		proxy.WriteError(w, http.StatusServiceUnavailable, "gateway has no config loaded")
+		return
+	}
+
+	m, ok := snap.router.Match(r)
 	if !ok {
 		proxy.WriteError(w, http.StatusNotFound, "no route matched")
 		return
 	}
 
-	svc := g.services[m.Route.Service]
+	svc := snap.services[m.Route.Service]
 	t, err := svc.balancer.Next()
 	if err != nil {
 		g.logger.Warn("no upstream available", "service", svc.name, "err", err)
@@ -79,15 +94,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	g.logger.Debug("routed",
-		"route", m.Route.Name, "service", svc.name, "target", t.Addr, "path", r.URL.Path)
+		"version", snap.Version, "route", m.Route.Name,
+		"service", svc.name, "target", t.Addr, "path", r.URL.Path)
 	g.fwd.Forward(w, r, dst)
-}
-
-func firstActiveTarget(ts []config.Target) config.Target {
-	for _, t := range ts {
-		if *t.Weight > 0 {
-			return t
-		}
-	}
-	return ts[0]
 }

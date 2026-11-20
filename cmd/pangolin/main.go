@@ -14,6 +14,7 @@ import (
 	"github.com/hyphen-ani/pangolin/internal/config"
 	"github.com/hyphen-ani/pangolin/internal/gateway"
 	"github.com/hyphen-ani/pangolin/internal/proxy"
+	"github.com/hyphen-ani/pangolin/internal/reload"
 	"github.com/hyphen-ani/pangolin/internal/server"
 )
 
@@ -63,6 +64,9 @@ func validateCmd(args []string) error {
 	}
 
 	cfg, err := config.Load(*path)
+	if err := gateway.Validate(cfg); err != nil {
+		return fmt.Errorf("%s: %w", *path, err)
+	}
 	if err != nil {
 		return err
 	}
@@ -88,21 +92,25 @@ func runCmd(args []string) error {
 
 	logger := newLogger(*logLevel)
 
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
+	fwd := proxy.NewForwarder(proxy.NewTransport(), logger)
+	gw := gateway.New(fwd, logger)
+	rl := reload.New(*cfgPath, gw.Apply, logger)
+
+	// The first load must succeed; later failed reloads only log.
+	if _, err := rl.Load(); err != nil {
 		return err
 	}
-	fwd := proxy.NewForwarder(proxy.NewTransport(), logger)
-	gw, err := gateway.New(cfg, fwd, logger)
-	if err != nil {
-		return fmt.Errorf("build gateway: %w", err)
-	}
-	logger.Info("config loaded", "path", *cfgPath, "services", len(cfg.Services))
 
 	srv := server.New(*listen, gw, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	go func() {
+		if err := rl.Watch(ctx); err != nil {
+			logger.Error("config watcher stopped; hot reload disabled", "err", err)
+		}
+	}()
 
 	return srv.Run(ctx, *drain)
 }
