@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/p-logo.png" alt="Pangolin logo" width="160">
+  <img src="assets/p-logo.png" alt="Pangolin logo" width="300">
 </p>
 
 <h1 align="center">Pangolin</h1>
